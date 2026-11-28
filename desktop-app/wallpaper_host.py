@@ -10,6 +10,7 @@ from contextlib import suppress
 import ctypes
 from ctypes import wintypes
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -271,6 +272,7 @@ if _IS_WINDOWS:
         ("GetClassNameW", [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
         ("IsWindowVisible", [wintypes.HWND], wintypes.BOOL),
         ("IsIconic", [wintypes.HWND], wintypes.BOOL),
+        ("IsZoomed", [wintypes.HWND], wintypes.BOOL),
         ("MonitorFromWindow", [wintypes.HWND, wintypes.DWORD], wintypes.HMONITOR),
         ("GetAncestor", [wintypes.HWND, wintypes.UINT], wintypes.HWND),
         ("OpenInputDesktop", [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], ctypes.c_void_p),
@@ -1400,6 +1402,8 @@ class WallpaperHost:
         is_locked: bool,
         is_fullscreen: bool,
         is_battery_saver: bool,
+        is_maximized: bool = False,
+        is_other_app_focused: bool = False,
     ) -> dict[str, Any]:
         """Evaluate whether desktop work should yield based on policy and OS signals."""
         norm_policy = str(policy or "auto").strip().lower()
@@ -1413,6 +1417,10 @@ class WallpaperHost:
             return {"paused": True, "reason": "locked"}
         if bool(is_fullscreen):
             return {"paused": True, "reason": "fullscreen"}
+        if norm_policy in ("maximized", "focused") and bool(is_maximized):
+            return {"paused": True, "reason": "maximized"}
+        if norm_policy == "focused" and bool(is_other_app_focused):
+            return {"paused": True, "reason": "focused"}
         if bool(is_battery_saver):
             return {"paused": True, "reason": "battery"}
         return {"paused": False, "reason": "active"}
@@ -1423,9 +1431,11 @@ class WallpaperHost:
         own_hwnd: int = 0,
         target_monitor_rect: Optional[tuple[int, int, int, int]] = None,
     ) -> dict[str, Any]:
-        """Inspect OS lock screen, fullscreen foreground window, and battery saver state."""
+        """Inspect OS lock screen, fullscreen/maximized/focused window, and battery saver state."""
         is_locked = False
         is_fullscreen = False
+        is_maximized = False
+        is_other_app_focused = False
         is_battery_saver = False
 
         if _IS_WINDOWS:
@@ -1459,37 +1469,56 @@ class WallpaperHost:
                                 if _user32.GetWindowRect(fg, ctypes.byref(rect)):
                                     fw = int(rect.right - rect.left)
                                     fh = int(rect.bottom - rect.top)
+                                    overlaps_target = True
                                     mon_rect: Optional[tuple[int, int, int, int]] = None
                                     if target_monitor_rect is not None and len(target_monitor_rect) == 4:
                                         tx, ty, tw, th = (int(v) for v in target_monitor_rect)
                                         if tw > 0 and th > 0:
                                             mon_rect = (tx, ty, tw, th)
-                                    else:
+                                            overlap_w = min(int(rect.right), tx + tw) - max(int(rect.left), tx)
+                                            overlap_h = min(int(rect.bottom), ty + th) - max(int(rect.top), ty)
+                                            overlaps_target = overlap_w > 0 and overlap_h > 0
+                                    if fw >= 80 and fh >= 80 and overlaps_target:
+                                        is_other_app_focused = True
+                                        work_rect: Optional[tuple[int, int, int, int]] = None
                                         hmon = _user32.MonitorFromWindow(fg, _MONITOR_DEFAULTTONEAREST)
                                         if hmon:
                                             info = _MONITORINFOEXW()
                                             info.cbSize = ctypes.sizeof(_MONITORINFOEXW)
                                             if _user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
                                                 rc = info.rcMonitor
-                                                mon_rect = (
-                                                    int(rc.left),
-                                                    int(rc.top),
-                                                    int(rc.right - rc.left),
-                                                    int(rc.bottom - rc.top),
+                                                if mon_rect is None:
+                                                    mon_rect = (
+                                                        int(rc.left),
+                                                        int(rc.top),
+                                                        int(rc.right - rc.left),
+                                                        int(rc.bottom - rc.top),
+                                                    )
+                                                wrc = info.rcWork
+                                                work_rect = (
+                                                    int(wrc.left),
+                                                    int(wrc.top),
+                                                    int(wrc.right - wrc.left),
+                                                    int(wrc.bottom - wrc.top),
                                                 )
-                                    if mon_rect is not None:
-                                        mx, my, mw, mh = mon_rect
-                                        if (
-                                            fw >= mw - 4
-                                            and fh >= mh - 4
-                                            and rect.left <= mx + 2
-                                            and rect.top <= my + 2
-                                            and rect.right >= mx + mw - 2
-                                            and rect.bottom >= my + mh - 2
-                                        ):
+                                        is_zoomed = bool(_user32.IsZoomed(fg)) if hasattr(_user32, "IsZoomed") else False
+                                        if is_zoomed:
+                                            is_maximized = True
+                                        elif work_rect is not None and fw >= work_rect[2] - 16 and fh >= work_rect[3] - 16:
+                                            is_maximized = True
+                                        if mon_rect is not None:
+                                            mx, my, mw, mh = mon_rect
+                                            if (
+                                                fw >= mw - 4
+                                                and fh >= mh - 4
+                                                and rect.left <= mx + 2
+                                                and rect.top <= my + 2
+                                                and rect.right >= mx + mw - 2
+                                                and rect.bottom >= my + mh - 2
+                                            ):
+                                                is_fullscreen = True
+                                        elif quns_val in (_QUNS_RUNNING_D3D_FULL_SCREEN, _QUNS_PRESENTATION_MODE):
                                             is_fullscreen = True
-                                    elif quns_val in (_QUNS_RUNNING_D3D_FULL_SCREEN, _QUNS_PRESENTATION_MODE):
-                                        is_fullscreen = True
 
             if _kernel32 is not None:
                 with suppress(Exception):
@@ -1510,6 +1539,45 @@ class WallpaperHost:
                 info = NSProcessInfo.processInfo()
                 if hasattr(info, "isLowPowerModeEnabled"):
                     is_battery_saver = bool(info.isLowPowerModeEnabled())
+            with suppress(Exception):
+                import AppKit  # type: ignore
+                import Quartz  # type: ignore
+
+                front = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+                if front is not None:
+                    front_pid = int(front.processIdentifier())
+                    bundle_id = str(front.bundleIdentifier() or "")
+                    if front_pid > 0 and front_pid != os.getpid() and bundle_id not in (
+                        "com.apple.dock",
+                        "com.apple.loginwindow",
+                        "com.apple.WindowManager",
+                    ):
+                        scr = AppKit.NSScreen.mainScreen() or (AppKit.NSScreen.screens() or [None])[0]
+                        sw = int(scr.frame().size.width) if scr is not None else 1920
+                        sh = int(scr.frame().size.height) if scr is not None else 1080
+                        vf = scr.visibleFrame() if scr is not None else None
+                        vw = int(vf.size.width) if vf is not None else sw
+                        vh = int(vf.size.height) if vf is not None else max(1, sh - 25)
+                        win_list = Quartz.CGWindowListCopyWindowInfo(
+                            Quartz.kCGWindowListOptionOnScreenOnly
+                            | Quartz.kCGWindowListExcludeDesktopElements,
+                            Quartz.kCGNullWindowID,
+                        ) or []
+                        for win in win_list:
+                            if int(win.get("kCGWindowOwnerPID", -1)) != front_pid:
+                                continue
+                            if int(win.get("kCGWindowLayer", -1)) != 0:
+                                continue
+                            bounds = win.get("kCGWindowBounds") or {}
+                            ww = float(bounds.get("Width", 0))
+                            wh = float(bounds.get("Height", 0))
+                            if ww >= 80 and wh >= 80:
+                                is_other_app_focused = True
+                                if ww >= sw - 8 and wh >= sh - 8:
+                                    is_fullscreen = True
+                                if ww >= vw - 24 and wh >= vh - 24:
+                                    is_maximized = True
+                                break
 
         elif _IS_LINUX:
             with suppress(Exception):
@@ -1540,10 +1608,49 @@ class WallpaperHost:
                     )
                     if proc.returncode == 0 and "true" in proc.stdout.lower():
                         is_locked = True
+            with suppress(Exception):
+                xprop = shutil.which("xprop")
+                if xprop:
+                    root_proc = subprocess.run(
+                        [xprop, "-root", "_NET_ACTIVE_WINDOW"],
+                        capture_output=True,
+                        text=True,
+                        timeout=0.4,
+                        check=False,
+                    )
+                    m = re.search(r"0x[0-9a-fA-F]+", root_proc.stdout or "")
+                    if root_proc.returncode == 0 and m and int(m.group(0), 16) != 0:
+                        xid = m.group(0)
+                        win_proc = subprocess.run(
+                            [xprop, "-id", xid, "_NET_WM_STATE", "_NET_WM_PID", "_NET_WM_WINDOW_TYPE"],
+                            capture_output=True,
+                            text=True,
+                            timeout=0.4,
+                            check=False,
+                        )
+                        out = win_proc.stdout or ""
+                        if win_proc.returncode == 0:
+                            pid_m = re.search(r"_NET_WM_PID\([^)]+\)\s*=\s*(\d+)", out)
+                            active_pid = int(pid_m.group(1)) if pid_m else -1
+                            is_shell = (
+                                "_NET_WM_WINDOW_TYPE_DESKTOP" in out
+                                or "_NET_WM_WINDOW_TYPE_DOCK" in out
+                            )
+                            if not is_shell and active_pid != os.getpid():
+                                is_other_app_focused = True
+                                if "_NET_WM_STATE_FULLSCREEN" in out:
+                                    is_fullscreen = True
+                                if (
+                                    "_NET_WM_STATE_MAXIMIZED_VERT" in out
+                                    and "_NET_WM_STATE_MAXIMIZED_HORZ" in out
+                                ):
+                                    is_maximized = True
 
         return {
             "is_locked": bool(is_locked),
             "is_fullscreen": bool(is_fullscreen),
+            "is_maximized": bool(is_maximized),
+            "is_other_app_focused": bool(is_other_app_focused),
             "is_battery_saver": bool(is_battery_saver),
         }
 

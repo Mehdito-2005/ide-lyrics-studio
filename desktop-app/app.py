@@ -94,11 +94,11 @@ except Exception:
         return round(max(float(min_opacity), min(1.0, num)), 4)
 
 WINDOW_TITLE = "IDE Lyrics Studio"
-APP_VERSION = "1.8.4"
+APP_VERSION = "1.8.4.1"
 GITHUB_REPO = "Mehdito-2005/ide-lyrics-studio"
 VALID_MODES = ("app", "wallpaper", "overlay")
 VALID_OVERLAY_SIDES = ("left", "center", "right")
-VALID_AUTO_YIELD_MODES = ("auto", "battery_only", "off")
+VALID_AUTO_YIELD_MODES = ("auto", "maximized", "focused", "battery_only", "off")
 DEFAULT_MODE = "app"
 DEFAULT_WALLPAPER_MONITOR = "primary"
 DEFAULT_OVERLAY_SIDE = "right"
@@ -1772,6 +1772,8 @@ class DesktopAppController:
         os_state = {
             "is_locked": False,
             "is_fullscreen": False,
+            "is_maximized": False,
+            "is_other_app_focused": False,
             "is_battery_saver": False,
         }
         if hasattr(self.wallpaper_host, "detect_desktop_yield_state"):
@@ -1785,12 +1787,15 @@ class DesktopAppController:
             if isinstance(detected, dict):
                 os_state.update(detected)
 
+        keep_pinned_overlay = bool(self.mode == "overlay" and self.overlay_on_top)
         if hasattr(self.wallpaper_host, "evaluate_yield_state"):
             evaluated = _safe_call(
                 self.wallpaper_host.evaluate_yield_state,
                 policy,
                 is_locked=bool(os_state.get("is_locked", False)),
-                is_fullscreen=bool(os_state.get("is_fullscreen", False)),
+                is_fullscreen=False if keep_pinned_overlay else bool(os_state.get("is_fullscreen", False)),
+                is_maximized=False if keep_pinned_overlay else bool(os_state.get("is_maximized", False)),
+                is_other_app_focused=False if keep_pinned_overlay else bool(os_state.get("is_other_app_focused", False)),
                 is_battery_saver=bool(os_state.get("is_battery_saver", False)),
             )
             if isinstance(evaluated, dict):
@@ -2223,9 +2228,21 @@ class DesktopAppController:
                 "Auto-Pause When Hidden",
                 Menu(
                     MenuItem(
-                        "Smart Auto (Fullscreen & Lock)",
+                        "Fullscreen & Lock (Smart Auto)",
                         _action(lambda: self.set_auto_yield_mode("auto")),
                         checked=lambda _item: self.auto_yield_mode == "auto",
+                        radio=True,
+                    ),
+                    MenuItem(
+                        "When Another App Is Maximized",
+                        _action(lambda: self.set_auto_yield_mode("maximized")),
+                        checked=lambda _item: self.auto_yield_mode == "maximized",
+                        radio=True,
+                    ),
+                    MenuItem(
+                        "Whenever Another App Is Open",
+                        _action(lambda: self.set_auto_yield_mode("focused")),
+                        checked=lambda _item: self.auto_yield_mode == "focused",
                         radio=True,
                     ),
                     MenuItem(
@@ -2235,7 +2252,7 @@ class DesktopAppController:
                         radio=True,
                     ),
                     MenuItem(
-                        "Always Active",
+                        "Always Active (Never Pause)",
                         _action(lambda: self.set_auto_yield_mode("off")),
                         checked=lambda _item: self.auto_yield_mode == "off",
                         radio=True,

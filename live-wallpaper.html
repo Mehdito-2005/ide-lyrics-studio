@@ -2138,6 +2138,11 @@
       will-change: transform, filter, opacity;
     }
 
+    #wallpaper-container.is-yield-paused,
+    #wallpaper-container.is-yield-paused * {
+      animation-play-state: paused !important;
+    }
+
     .custom-bg-scrim {
       position: absolute;
       inset: 0;
@@ -3064,22 +3069,24 @@
           </div>
         </div>
 
-        <div class="drawer-card" id="card-wallpaper-settings" data-scope="wallpaper">
+        <div class="drawer-card" id="card-wallpaper-settings" data-scope="app wallpaper">
           <div class="drawer-card-header">
             <span class="drawer-card-title">Wallpaper Mode</span>
-            <span class="scope-tag scope-tag--wallpaper">Wallpaper</span>
+            <span class="scope-tag scope-tag--shared">App / Wallpaper</span>
           </div>
           <div class="drawer-row" id="row-auto-yield-mode">
             <div class="drawer-label-row">
               <span>Auto-Pause When Hidden</span>
             </div>
             <div class="drawer-btn-group" id="group-auto-yield-mode">
-              <button type="button" class="drawer-btn is-active" data-yield="auto" title="Pause wallpaper rendering when fullscreen windows cover it">Smart Auto</button>
-              <button type="button" class="drawer-btn" data-yield="battery_only" title="Only pause when running on battery">Battery Only</button>
-              <button type="button" class="drawer-btn" data-yield="off" title="Keep rendering continuously">Always Active</button>
+              <button type="button" class="drawer-btn is-active" data-yield="auto" title="Pause rendering and custom videos when a fullscreen app covers your display">Fullscreen</button>
+              <button type="button" class="drawer-btn" data-yield="maximized" title="Pause rendering and custom videos when another app is fullscreen or maximized">Maximized</button>
+              <button type="button" class="drawer-btn" data-yield="focused" title="Pause rendering and custom videos whenever any other app window is open/focused">Any App</button>
+              <button type="button" class="drawer-btn" data-yield="battery_only" title="Only pause when running on Battery Saver / Low Power">Battery</button>
+              <button type="button" class="drawer-btn" data-yield="off" title="Keep rendering continuously">Never</button>
             </div>
           </div>
-          <div class="drawer-hint" id="hint-wallpaper-yield">Pauses rendering when fullscreen apps cover your desktop. Right-click the tray icon to switch back from Wallpaper mode.</div>
+          <div class="drawer-hint" id="hint-wallpaper-yield">Pauses rendering &amp; custom videos when fullscreen, maximized, or any other app is open. Right-click the tray icon to switch modes anytime.</div>
         </div>
 
         <div class="drawer-card" data-scope="all">
@@ -7619,12 +7626,37 @@
       c.restore();
     }
     let rafId = null;
+    function syncYieldMediaPlayback(paused) {
+      if (wallpaperContainer) {
+        wallpaperContainer.classList.toggle("is-yield-paused", Boolean(paused));
+      }
+      const vidEl = document.getElementById("wallpaper-custom-bg-video");
+      if (!vidEl) return;
+      if (paused) {
+        try { if (!vidEl.paused) vidEl.pause(); } catch (e) {}
+      } else if (
+        vidEl.style.display === "block"
+        && vidEl.getAttribute("src")
+        && settings.backdropMode === "custom"
+      ) {
+        try {
+          const p = vidEl.play();
+          if (p && p.catch) p.catch(() => {});
+        } catch (e) {}
+      }
+    }
     function scheduleRender() {
-      if (document.hidden || isDesktopYieldPaused || rafId !== null) return;
+      if (document.hidden || isDesktopYieldPaused) {
+        syncYieldMediaPlayback(true);
+        return;
+      }
+      syncYieldMediaPlayback(false);
+      if (rafId !== null) return;
       lastFrameTime = performance.now();
       rafId = requestAnimationFrame(render);
     }
     function pauseRender() {
+      syncYieldMediaPlayback(true);
       if (rafId !== null) {
         cancelAnimationFrame(rafId);
         rafId = null;
@@ -8921,7 +8953,11 @@
         vidEl.style.opacity = String(op);
         vidEl.style.filter = filterCss;
         vidEl.style.transform = scaleCss;
-        try { const p = vidEl.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+        if (!document.hidden && !isDesktopYieldPaused) {
+          try { const p = vidEl.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+        } else {
+          try { vidEl.pause(); } catch (e) {}
+        }
       } else if (customActive && imgEl) {
         if (heroEl) heroEl.style.display = "none";
         if (vidEl) { vidEl.style.display = "none"; try { vidEl.pause(); } catch (e) {} }
@@ -9471,7 +9507,7 @@
     }
 
     function syncAutoYieldUI(mode) {
-      const normalized = ["auto", "battery_only", "off"].includes(mode) ? mode : "auto";
+      const normalized = ["auto", "maximized", "focused", "battery_only", "off"].includes(mode) ? mode : "auto";
       currentAutoYieldMode = normalized;
       document.querySelectorAll("#group-auto-yield-mode .drawer-btn").forEach((b) => {
         b.classList.toggle("is-active", b.dataset.yield === normalized);

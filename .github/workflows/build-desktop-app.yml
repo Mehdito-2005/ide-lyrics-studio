@@ -42,10 +42,10 @@ jobs:
         shell: pwsh
         run: |
           $portable = Get-Item .\desktop-app\dist\IDE-Lyrics-Studio.exe
-          if ($portable.VersionInfo.FileVersion -ne "1.8.4.0") {
+          if ($portable.VersionInfo.FileVersion -ne "1.8.4.1") {
             throw "Unexpected portable FileVersion: $($portable.VersionInfo.FileVersion)"
           }
-          $setup = Get-Item .\desktop-app\dist\IDE-Lyrics-Studio-Setup-1.8.4.exe
+          $setup = Get-Item .\desktop-app\dist\IDE-Lyrics-Studio-Setup-1.8.4.1.exe
           $smokeDir = Join-Path $env:TEMP "ide-lyrics-setup-smoke"
           if (Test-Path $smokeDir) { Remove-Item -Recurse -Force $smokeDir }
           $proc = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT", "/CURRENTUSER", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$smokeDir`"" -Wait -PassThru
@@ -101,7 +101,7 @@ jobs:
           from smtc_bridge import SMTCBridge
           from wallpaper_host import WallpaperHost
 
-          assert app.APP_VERSION == "1.8.4", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
+          assert app.APP_VERSION == "1.8.4.1", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
           assert app.is_newer_version("v1.9.0", app.APP_VERSION) is True
           assert app.is_newer_version(app.APP_VERSION, app.APP_VERSION) is False
           assert wallpaper_host._get_macos_wallpaper_level() > wallpaper_host._MACOS_DESKTOP_WINDOW_LEVEL
@@ -222,7 +222,7 @@ jobs:
           import smtc_bridge
           import wallpaper_host
 
-          assert app.APP_VERSION == "1.8.4", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
+          assert app.APP_VERSION == "1.8.4.1", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
           assert app.DATA_DIR != app.APP_DIR, "System install must store user data outside /usr/lib"
           assert (app.REPO_ROOT / "live-wallpaper.html").is_file()
           assert isinstance(app._has_linux_tray_host(), bool)

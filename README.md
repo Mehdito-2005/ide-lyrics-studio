@@ -27,9 +27,9 @@ Grab the latest prebuilt release from the [Releases](https://github.com/Mehdito-
 
 | OS | Recommended Installer | Portable / Alternative | Notes |
 | --- | --- | --- | --- |
-| **Windows 10/11** | `IDE-Lyrics-Studio-Setup-1.8.4.exe` | `IDE-Lyrics-Studio.exe` | No admin or Python needed. On first launch, Windows SmartScreen may show **More info → Run anyway** since binaries are unsigned. |
+| **Windows 10/11** | `IDE-Lyrics-Studio-Setup-1.8.4.1.exe` | `IDE-Lyrics-Studio.exe` | No admin or Python needed. On first launch, Windows SmartScreen may show **More info → Run anyway** since binaries are unsigned. |
 | **macOS (Apple Silicon)** | `IDE-Lyrics-Studio-macOS-arm64.dmg` | `IDE-Lyrics-Studio-macOS.zip` | Drag `IDE-Lyrics-Studio.app` to Applications. Run `xattr -cr /Applications/IDE-Lyrics-Studio.app` once to clear Gatekeeper quarantine. For system-wide sync beyond Spotify/Apple Music on macOS 15.4+, install `brew tap ungive/media-control && brew install media-control`. |
-| **Linux (Ubuntu / Debian / Mint / Pop!_OS)** | `ide-lyrics-studio_1.8.4_all.deb` | `IDE-Lyrics-Studio-Linux.tar.gz` | Install with `sudo apt install ./ide-lyrics-studio_1.8.4_all.deb` (pulls GTK3/WebKitGTK automatically, zero glibc lock-in). For Fedora/Arch, extract the `.tar.gz` and run `./install.sh` (requires `python3-gobject`, `webkit2gtk`, `pillow`, and `playerctl`). Works cleanly on X11 & Wayland/NVIDIA (`WEBKIT_DISABLE_DMABUF_RENDERER=1` preconfigured). A Flatpak manifest is also included in `desktop-app/flatpak/`. |
+| **Linux (Ubuntu / Debian / Mint / Pop!_OS)** | `ide-lyrics-studio_1.8.4.1_all.deb` | `IDE-Lyrics-Studio-Linux.tar.gz` | Install with `sudo apt install ./ide-lyrics-studio_1.8.4.1_all.deb` (pulls GTK3/WebKitGTK automatically, zero glibc lock-in). For Fedora/Arch, extract the `.tar.gz` and run `./install.sh` (requires `python3-gobject`, `webkit2gtk`, `pillow`, and `playerctl`). Works cleanly on X11 & Wayland/NVIDIA (`WEBKIT_DISABLE_DMABUF_RENDERER=1` preconfigured). A Flatpak manifest is also included in `desktop-app/flatpak/`. |
 
 ## How It Works Under the Hood
 
