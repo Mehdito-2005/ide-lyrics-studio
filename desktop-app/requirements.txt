@@ -1,0 +1,14 @@
+# IDE Lyrics Desktop App - Cross-Platform Dependencies (Windows / macOS / Linux)
+pywebview>=5.0
+pystray>=0.19.5
+pillow>=10.0
+
+# Windows SMTC (System Media Transport Controls)
+winrt-runtime>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Control>=2.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
+
+# macOS Cocoa / WebKit integration (for desktop-level wallpaper & menu bar tray)
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-WebKit>=10.0; sys_platform == "darwin"

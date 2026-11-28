@@ -1,0 +1,46 @@
+app-id: com.idelyrics.studio
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: ide-lyrics-studio
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.mpris.MediaPlayer2.*
+  - --own-name=com.idelyrics.studio
+  - --filesystem=xdg-documents/IDE-Lyrics-Live-Wallpaper:create
+
+modules:
+  - name: python-deps
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-build-isolation --no-deps --prefix=/app pywebview pystray proxy-tools bottle typing-extensions six python-xlib pillow
+    sources: []
+
+  - name: ide-lyrics-studio
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 live-wallpaper.html /app/share/ide-lyrics-studio/live-wallpaper.html
+      - install -Dm644 project.json /app/share/ide-lyrics-studio/project.json
+      - install -Dm644 LivelyProperties.json /app/share/ide-lyrics-studio/LivelyProperties.json
+      - install -Dm644 desktop-app/app.py /app/share/ide-lyrics-studio/desktop-app/app.py
+      - install -Dm644 desktop-app/smtc_bridge.py /app/share/ide-lyrics-studio/desktop-app/smtc_bridge.py
+      - install -Dm644 desktop-app/wallpaper_host.py /app/share/ide-lyrics-studio/desktop-app/wallpaper_host.py
+      - install -Dm644 desktop-app/integrations.py /app/share/ide-lyrics-studio/desktop-app/integrations.py
+      - |
+        cat <<'EOF' > /app/bin/ide-lyrics-studio
+        #!/usr/bin/env bash
+        export IDE_LYRICS_SYSTEM_INSTALL=1
+        export IDE_LYRICS_LAUNCHER="flatpak run com.idelyrics.studio"
+        exec python3 /app/share/ide-lyrics-studio/desktop-app/app.py "$@"
+        EOF
+        chmod 0755 /app/bin/ide-lyrics-studio
+    sources:
+      - type: dir
+        path: ../..

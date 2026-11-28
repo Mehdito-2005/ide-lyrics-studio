@@ -1,0 +1,21 @@
+# Desktop app build & packaging outputs
+desktop-app/build/
+desktop-app/dist/
+desktop-app/*.ico
+desktop-app/*.spec
+
+# Desktop app runtime state & logs
+desktop-app/webview_storage/
+desktop-app/config.json
+desktop-app/*.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS metadata
+.DS_Store
+Thumbs.db

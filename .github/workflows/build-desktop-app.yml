@@ -1,0 +1,290 @@
+name: Build Desktop App (Windows, macOS, Linux)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r desktop-app/requirements.txt pyinstaller
+      - name: Ensure Inno Setup 6 is installed
+        shell: pwsh
+        run: |
+          $found = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $found) {
+            $candidates = @(
+              (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+              (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
+            )
+            if (-not ($candidates | Where-Object { Test-Path $_ })) {
+              choco install innosetup -y --no-progress
+            }
+          }
+      - name: Run desktop app unit tests
+        run: powershell -ExecutionPolicy Bypass -File .\desktop-app\test-desktop-app.ps1
+      - name: Build Windows portable .exe and Inno Setup installer
+        run: powershell -ExecutionPolicy Bypass -File .\desktop-app\build-exe.ps1 -Installer
+      - name: Verify built Windows artifacts and silent installer smoke test
+        shell: pwsh
+        run: |
+          $portable = Get-Item .\desktop-app\dist\IDE-Lyrics-Studio.exe
+          if ($portable.VersionInfo.FileVersion -ne "1.8.3.0") {
+            throw "Unexpected portable FileVersion: $($portable.VersionInfo.FileVersion)"
+          }
+          $setup = Get-Item .\desktop-app\dist\IDE-Lyrics-Studio-Setup-1.8.3.exe
+          $smokeDir = Join-Path $env:TEMP "ide-lyrics-setup-smoke"
+          if (Test-Path $smokeDir) { Remove-Item -Recurse -Force $smokeDir }
+          $proc = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT", "/CURRENTUSER", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$smokeDir`"" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            throw "Silent Inno Setup install failed with exit code $($proc.ExitCode)"
+          }
+          $installedExe = Join-Path $smokeDir "IDE-Lyrics-Studio.exe"
+          if (-not (Test-Path $installedExe)) {
+            throw "Installed executable missing at $installedExe"
+          }
+          Write-Host "[PASS] Windows portable & Setup installer verified."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IDE-Lyrics-Studio-Windows
+          path: |
+            desktop-app/dist/IDE-Lyrics-Studio.exe
+            desktop-app/dist/IDE-Lyrics-Studio-Setup-*.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r desktop-app/requirements.txt pyinstaller
+      - name: Build macOS Apple Silicon .app, .dmg, and .zip
+        run: bash desktop-app/build-mac.sh
+      - name: Run macOS smoke tests
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path("desktop-app").resolve()))
+
+          # 1. Core + macOS imports
+          import AppKit  # noqa: F401
+          import PIL  # noqa: F401
+          import pystray  # noqa: F401
+          import webview  # noqa: F401
+          import app
+          import integrations
+          import smtc_bridge
+          from smtc_bridge import SMTCBridge
+          from wallpaper_host import WallpaperHost
+
+          assert app.APP_VERSION == "1.8.3", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
+          assert app.is_newer_version("v1.9.0", app.APP_VERSION) is True
+          assert app.is_newer_version(app.APP_VERSION, app.APP_VERSION) is False
+
+          # 2. media-control JSON parser check
+          mc_snap = smtc_bridge._parse_media_control_output(
+              '{"title":"Midnight City","artist":"M83","album":"Hurry Up","playing":true,"elapsedTime":42.5,"duration":243.0,"bundleIdentifier":"com.spotify.client"}'
+          )
+          assert mc_snap["status"] == "playing"
+          assert mc_snap["sourceApp"] == "Spotify"
+          assert abs(mc_snap["positionSec"] - 42.5) < 0.01
+
+          # 3. SingleInstanceLock fcntl.flock conflict & release
+          with tempfile.TemporaryDirectory() as tmpdir:
+              lock_path = Path(tmpdir) / "smoke.lock"
+              lock1 = app.SingleInstanceLock(lock_file=lock_path)
+              lock2 = app.SingleInstanceLock(lock_file=lock_path)
+              assert lock1.acquire() is True, "First lock should acquire"
+              assert lock2.acquire() is False, "Second lock should conflict"
+              lock1.release()
+              assert lock2.acquire() is True, "Second lock should acquire after release"
+              lock2.release()
+
+              # 4. render_macos_launchagent_plist validated with Apple native plutil -lint
+              plist_path = Path(tmpdir) / "com.idelyrics.studio.plist"
+              plist_xml = app.render_macos_launchagent_plist(
+                  ["/Applications/IDE-Lyrics-Studio.app/Contents/MacOS/IDE-Lyrics-Studio", "--tray"]
+              )
+              plist_path.write_text(plist_xml, encoding="utf-8")
+              subprocess.run(["plutil", "-lint", str(plist_path)], check=True)
+
+              # 5. DesktopApi, wizard state, integrations detection & pystray menu validation
+              ctrl = app.DesktopAppController(initial_mode="app", config_path=Path(tmpdir) / "config.json")
+              api = app.DesktopApi(ctrl)
+              assert api.get_version() == app.APP_VERSION
+              state = api.get_setup_state()
+              assert "integrations" in state
+              assert "cider" in state["integrations"] and "spicetify" in state["integrations"]
+              assert "wallpaper" not in state["integrations"]
+              assert not hasattr(integrations, "export_wallpaper_package")
+              menu = ctrl.build_tray_menu()
+              assert bool(menu) is True
+              for item in menu:
+                  _ = item.text
+                  if item.submenu is not None:
+                      assert bool(item.submenu) is True
+                      for sub in item.submenu:
+                          _ = sub.text
+
+          # 7. WallpaperHost.list_monitors()
+          monitors = WallpaperHost.list_monitors()
+          assert isinstance(monitors, list) and len(monitors) >= 1, f"Expected >=1 monitor, got {monitors!r}"
+
+          # 8. SMTCBridge availability & snapshot shape
+          bridge = SMTCBridge()
+          assert bridge.available is True, "SMTCBridge should report available=True on macOS"
+          snap = bridge.get_snapshot()
+          assert snap["status"] in ("playing", "paused", "stopped")
+
+          # 9. Built .app Info.plist, valid ad-hoc code signature, and valid .dmg
+          app_bundle = Path("desktop-app/dist/IDE-Lyrics-Studio.app")
+          info_plist = app_bundle / "Contents/Info.plist"
+          assert info_plist.is_file(), f"Missing Info.plist: {info_plist}"
+          subprocess.run(["plutil", "-lint", str(info_plist)], check=True)
+          with info_plist.open("rb") as fp:
+              plist_data = plistlib.load(fp)
+          assert plist_data.get("LSUIElement") is True
+          assert plist_data.get("CFBundleShortVersionString") == app.APP_VERSION
+          subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app_bundle)], check=True)
+
+          dmg_path = Path("desktop-app/dist/IDE-Lyrics-Studio-macOS-arm64.dmg")
+          assert dmg_path.is_file(), f"Missing DMG: {dmg_path}"
+          subprocess.run(["hdiutil", "verify", str(dmg_path)], check=True)
+
+          print("macOS Apple Silicon smoke tests passed.")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IDE-Lyrics-Studio-macOS
+          path: |
+            desktop-app/dist/IDE-Lyrics-Studio-macOS-arm64.dmg
+            desktop-app/dist/IDE-Lyrics-Studio-macOS.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build & runtime GTK3 / WebKitGTK / AppIndicator system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip python3-pil python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1 gir1.2-ayatanaappindicator3-0.1 playerctl xvfb
+      - name: Build thin native .deb and portable tarball
+        run: bash desktop-app/build-linux.sh
+      - name: Install built .deb and run real installed artifact smoke tests
+        run: |
+          sudo apt-get install -y ./desktop-app/dist/ide-lyrics-studio_*.deb
+          test -x /usr/bin/ide-lyrics-studio
+          ! grep -q "/home/runner" /usr/share/applications/ide-lyrics-studio.desktop
+          xvfb-run -a env IDE_LYRICS_SYSTEM_INSTALL=1 PYTHONPATH=/usr/lib/ide-lyrics-studio/vendor:/usr/lib/ide-lyrics-studio/desktop-app python3 - <<'PY'
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          import gi
+          gi.require_version("Gtk", "3.0")
+          gi.require_version("WebKit2", "4.1")
+          from gi.repository import Gtk, WebKit2  # noqa: F401
+          import PIL  # noqa: F401
+          import pystray  # noqa: F401
+          import webview  # noqa: F401
+          import app
+          import integrations
+          import smtc_bridge
+          import wallpaper_host
+
+          assert app.APP_VERSION == "1.8.3", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
+          assert app.DATA_DIR != app.APP_DIR, "System install must store user data outside /usr/lib"
+          assert (app.REPO_ROOT / "live-wallpaper.html").is_file()
+
+          # SingleInstanceLock fcntl.flock conflict & release
+          with tempfile.TemporaryDirectory() as tmpdir:
+              lock_path = Path(tmpdir) / "smoke.lock"
+              lock1 = app.SingleInstanceLock(lock_file=lock_path)
+              lock2 = app.SingleInstanceLock(lock_file=lock_path)
+              assert lock1.acquire() is True
+              assert lock2.acquire() is False
+              lock1.release()
+              assert lock2.acquire() is True
+              lock2.release()
+
+              # Controller, DesktopApi, wizard state & pystray menu validation
+              ctrl = app.DesktopAppController(initial_mode="app", config_path=Path(tmpdir) / "config.json")
+              api = app.DesktopApi(ctrl)
+              assert api.get_version() == app.APP_VERSION
+              assert api.is_wizard_needed() is True
+              state = api.get_setup_state()
+              assert "cider" in state["integrations"] and "spicetify" in state["integrations"]
+              assert "wallpaper" not in state["integrations"]
+              assert not hasattr(integrations, "export_wallpaper_package")
+              menu = ctrl.build_tray_menu()
+              assert bool(menu) is True
+              for item in menu:
+                  _ = item.text
+                  if item.submenu is not None:
+                      assert bool(item.submenu) is True
+                      for sub in item.submenu:
+                          _ = sub.text
+
+          # Linux autostart, xrandr & playerctl checks
+          desktop_entry = app.render_linux_autostart_desktop("/usr/bin/ide-lyrics-studio --tray")
+          assert "[Desktop Entry]" in desktop_entry and "Exec=/usr/bin/ide-lyrics-studio --tray" in desktop_entry
+
+          mons = wallpaper_host._parse_xrandr_monitors(
+              "DP-1 connected primary 2560x1440+0+0 (normal)\nHDMI-1 connected 1920x1080+2560+0 (normal)\n"
+          )
+          assert len(mons) == 2 and mons[0]["is_primary"] is True
+
+          snap = smtc_bridge._parse_playerctl_output(
+              "Playing\tspotify\tStarboy\tThe Weeknd\tStarboy\t45000000\t230000000\thttps://example.com/art.jpg"
+          )
+          assert snap["status"] == "playing" and snap["sourceApp"] == "Spotify"
+
+          print("Linux .deb installed artifact smoke tests passed.")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IDE-Lyrics-Studio-Linux
+          path: |
+            desktop-app/dist/ide-lyrics-studio_*_all.deb
+            desktop-app/dist/IDE-Lyrics-Studio-Linux.tar.gz
+
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/IDE-Lyrics-Studio-Windows/IDE-Lyrics-Studio.exe
+            artifacts/IDE-Lyrics-Studio-Windows/IDE-Lyrics-Studio-Setup-*.exe
+            artifacts/IDE-Lyrics-Studio-macOS/IDE-Lyrics-Studio-macOS-arm64.dmg
+            artifacts/IDE-Lyrics-Studio-macOS/IDE-Lyrics-Studio-macOS.zip
+            artifacts/IDE-Lyrics-Studio-Linux/ide-lyrics-studio_*_all.deb
+            artifacts/IDE-Lyrics-Studio-Linux/IDE-Lyrics-Studio-Linux.tar.gz
