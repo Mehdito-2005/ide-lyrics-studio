@@ -42,10 +42,10 @@ jobs:
         shell: pwsh
         run: |
           $portable = Get-Item .\desktop-app\dist\IDE-Lyrics-Studio.exe
-          if ($portable.VersionInfo.FileVersion -ne "1.8.3.0") {
+          if ($portable.VersionInfo.FileVersion -ne "1.8.4.0") {
             throw "Unexpected portable FileVersion: $($portable.VersionInfo.FileVersion)"
           }
-          $setup = Get-Item .\desktop-app\dist\IDE-Lyrics-Studio-Setup-1.8.3.exe
+          $setup = Get-Item .\desktop-app\dist\IDE-Lyrics-Studio-Setup-1.8.4.exe
           $smokeDir = Join-Path $env:TEMP "ide-lyrics-setup-smoke"
           if (Test-Path $smokeDir) { Remove-Item -Recurse -Force $smokeDir }
           $proc = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT", "/CURRENTUSER", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$smokeDir`"" -Wait -PassThru
@@ -92,16 +92,20 @@ jobs:
           import AppKit  # noqa: F401
           import PIL  # noqa: F401
           import pystray  # noqa: F401
+          import Quartz  # noqa: F401
           import webview  # noqa: F401
           import app
           import integrations
           import smtc_bridge
+          import wallpaper_host
           from smtc_bridge import SMTCBridge
           from wallpaper_host import WallpaperHost
 
-          assert app.APP_VERSION == "1.8.3", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
+          assert app.APP_VERSION == "1.8.4", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
           assert app.is_newer_version("v1.9.0", app.APP_VERSION) is True
           assert app.is_newer_version(app.APP_VERSION, app.APP_VERSION) is False
+          assert wallpaper_host._get_macos_wallpaper_level() > wallpaper_host._MACOS_DESKTOP_WINDOW_LEVEL
+          assert smtc_bridge._safe_float("42,5") == 42.5
 
           # 2. media-control JSON parser check
           mc_snap = smtc_bridge._parse_media_control_output(
@@ -167,6 +171,8 @@ jobs:
               plist_data = plistlib.load(fp)
           assert plist_data.get("LSUIElement") is True
           assert plist_data.get("CFBundleShortVersionString") == app.APP_VERSION
+          assert bool(plist_data.get("NSAppleEventsUsageDescription"))
+          assert plist_data.get("NSAppTransportSecurity", {}).get("NSAllowsLocalNetworking") is True
           subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app_bundle)], check=True)
 
           dmg_path = Path("desktop-app/dist/IDE-Lyrics-Studio-macOS-arm64.dmg")
@@ -196,6 +202,8 @@ jobs:
         run: |
           sudo apt-get install -y ./desktop-app/dist/ide-lyrics-studio_*.deb
           test -x /usr/bin/ide-lyrics-studio
+          grep -q "WEBKIT_DISABLE_DMABUF_RENDERER" /usr/bin/ide-lyrics-studio
+          grep -q "GDK_BACKEND" /usr/bin/ide-lyrics-studio
           ! grep -q "/home/runner" /usr/share/applications/ide-lyrics-studio.desktop
           xvfb-run -a env IDE_LYRICS_SYSTEM_INSTALL=1 PYTHONPATH=/usr/lib/ide-lyrics-studio/vendor:/usr/lib/ide-lyrics-studio/desktop-app python3 - <<'PY'
           import sys
@@ -214,9 +222,12 @@ jobs:
           import smtc_bridge
           import wallpaper_host
 
-          assert app.APP_VERSION == "1.8.3", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
+          assert app.APP_VERSION == "1.8.4", f"Unexpected APP_VERSION: {app.APP_VERSION!r}"
           assert app.DATA_DIR != app.APP_DIR, "System install must store user data outside /usr/lib"
           assert (app.REPO_ROOT / "live-wallpaper.html").is_file()
+          assert isinstance(app._has_linux_tray_host(), bool)
+          gdk_mons = wallpaper_host._query_gdk_monitors()
+          assert isinstance(gdk_mons, list) and len(gdk_mons) >= 1, f"Expected GDK monitors, got {gdk_mons!r}"
 
           # SingleInstanceLock fcntl.flock conflict & release
           with tempfile.TemporaryDirectory() as tmpdir:

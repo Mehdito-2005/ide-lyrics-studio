@@ -25,6 +25,9 @@ for arg in "$@"; do
   fi
 done
 
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+export GDK_BACKEND="${GDK_BACKEND:-x11,wayland}"
+
 if [[ "${FOREGROUND}" -eq 1 ]]; then
   exec "${PYTHON_BIN}" "${APP_PY}" "${EXTRA_ARGS[@]}"
 fi

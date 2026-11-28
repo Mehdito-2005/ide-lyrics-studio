@@ -73,6 +73,8 @@ cat > "${DEB_ROOT}/usr/bin/ide-lyrics-studio" <<'EOF'
 set -euo pipefail
 export IDE_LYRICS_SYSTEM_INSTALL=1
 export IDE_LYRICS_LAUNCHER="/usr/bin/ide-lyrics-studio"
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+export GDK_BACKEND="${GDK_BACKEND:-x11,wayland}"
 export PYTHONPATH="/usr/lib/ide-lyrics-studio/vendor${PYTHONPATH:+:${PYTHONPATH}}"
 exec python3 "/usr/lib/ide-lyrics-studio/desktop-app/app.py" "$@"
 EOF
@@ -125,6 +127,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 export IDE_LYRICS_SYSTEM_INSTALL=1
 export IDE_LYRICS_LAUNCHER="${ROOT}/ide-lyrics-studio"
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+export GDK_BACKEND="${GDK_BACKEND:-x11,wayland}"
 export PYTHONPATH="${ROOT}/vendor${PYTHONPATH:+:${PYTHONPATH}}"
 exec python3 "${ROOT}/desktop-app/app.py" "$@"
 EOF

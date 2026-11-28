@@ -302,36 +302,40 @@ def classify_media_kind(
 _MACOS_POLL_APPLESCRIPT = r'''
 on run
   set delim to tab
-  if application "Spotify" is running then
-    tell application "Spotify"
-      set st to player state as string
-      if st is "playing" or st is "paused" then
-        set tName to name of current track as string
-        set tArtist to artist of current track as string
-        set tAlbum to album of current track as string
-        set tPos to player position as string
-        set tDur to duration of current track as string
-        set tArt to ""
-        try
-          set tArt to artwork url of current track as string
-        end try
-        return "Spotify" & delim & st & delim & tName & delim & tArtist & delim & tAlbum & delim & tPos & delim & tDur & delim & tArt
-      end if
-    end tell
-  end if
-  if application "Music" is running then
-    tell application "Music"
-      set st to player state as string
-      if st is "playing" or st is "paused" then
-        set tName to name of current track as string
-        set tArtist to artist of current track as string
-        set tAlbum to album of current track as string
-        set tPos to player position as string
-        set tDur to duration of current track as string
-        return "Apple Music" & delim & st & delim & tName & delim & tArtist & delim & tAlbum & delim & tPos & delim & tDur & delim & ""
-      end if
-    end tell
-  end if
+  try
+    if application "Spotify" is running then
+      tell application "Spotify"
+        set st to player state as string
+        if st is "playing" or st is "paused" then
+          set tName to name of current track as string
+          set tArtist to artist of current track as string
+          set tAlbum to album of current track as string
+          set tPos to player position as string
+          set tDur to duration of current track as string
+          set tArt to ""
+          try
+            set tArt to artwork url of current track as string
+          end try
+          return "Spotify" & delim & st & delim & tName & delim & tArtist & delim & tAlbum & delim & tPos & delim & tDur & delim & tArt
+        end if
+      end tell
+    end if
+  end try
+  try
+    if application "Music" is running then
+      tell application "Music"
+        set st to player state as string
+        if st is "playing" or st is "paused" then
+          set tName to name of current track as string
+          set tArtist to artist of current track as string
+          set tAlbum to album of current track as string
+          set tPos to player position as string
+          set tDur to duration of current track as string
+          return "Apple Music" & delim & st & delim & tName & delim & tArtist & delim & tAlbum & delim & tPos & delim & tDur & delim & ""
+        end if
+      end tell
+    end if
+  end try
   return ""
 end run
 '''
@@ -525,7 +529,10 @@ def _map_playback_status(status: Any) -> str:
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
     try:
-        num = float(str(val).strip())
+        s = str(val).strip()
+        if "," in s and "." not in s and s.count(",") == 1:
+            s = s.replace(",", ".")
+        num = float(s)
         return default if (num != num or num in (float("inf"), float("-inf"))) else num
     except Exception:
         return default
@@ -920,7 +927,7 @@ class SMTCBridge:
 
             elapsed = 0.0
             while not self._stop_event.is_set():
-                target = self._get_poll_interval()
+                target = max(0.25, self._get_poll_interval())
                 if elapsed >= target:
                     break
                 step = min(0.1, max(0.01, target - elapsed))

@@ -64,6 +64,12 @@ echo "[2/5] Running PyInstaller (arm64)..."
   --hidden-import "wallpaper_host" \
   --hidden-import "integrations" \
   --hidden-import "pystray._darwin" \
+  --hidden-import "Quartz" \
+  --hidden-import "AppKit" \
+  --hidden-import "Foundation" \
+  --hidden-import "WebKit" \
+  --hidden-import "PyObjCTools.AppHelper" \
+  --hidden-import "PyObjCTools.MachSignals" \
   --collect-submodules "webview" \
   --collect-data "webview" \
   "${APP_PY}"
@@ -71,13 +77,18 @@ echo "[2/5] Running PyInstaller (arm64)..."
 APP_BUNDLE="${DIST_DIR}/IDE-Lyrics-Studio.app"
 PLIST="${APP_BUNDLE}/Contents/Info.plist"
 
-echo "[3/5] Setting Info.plist metadata (LSUIElement, version, Retina)..."
+echo "[3/5] Setting Info.plist metadata (LSUIElement, TCC permissions, version, Retina)..."
 APP_VERSION="$("${PYTHON_BIN}" -c "import sys; sys.path.insert(0, '${SCRIPT_DIR}'); import app; print(app.APP_VERSION)")"
 if [[ -f "${PLIST}" ]] && command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
   /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "${PLIST}" 2>/dev/null || \
     /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "${PLIST}"
   /usr/libexec/PlistBuddy -c "Add :NSHighResolutionCapable bool true" "${PLIST}" 2>/dev/null || \
     /usr/libexec/PlistBuddy -c "Set :NSHighResolutionCapable true" "${PLIST}"
+  /usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string 'IDE Lyrics Studio reads now-playing song metadata from Spotify and Apple Music to display synced lyrics.'" "${PLIST}" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Set :NSAppleEventsUsageDescription 'IDE Lyrics Studio reads now-playing song metadata from Spotify and Apple Music to display synced lyrics.'" "${PLIST}"
+  /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "${PLIST}" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "${PLIST}" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsLocalNetworking true" "${PLIST}"
   /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${APP_VERSION}" "${PLIST}" 2>/dev/null || \
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${APP_VERSION}" "${PLIST}"
   /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${APP_VERSION}" "${PLIST}" 2>/dev/null || \

@@ -27,16 +27,16 @@ Grab the latest prebuilt release from the [Releases](https://github.com/Mehdito-
 
 | OS | Recommended Installer | Portable / Alternative | Notes |
 | --- | --- | --- | --- |
-| **Windows 10/11** | `IDE-Lyrics-Studio-Setup-1.8.3.exe` | `IDE-Lyrics-Studio.exe` | No admin or Python needed. On first launch, Windows SmartScreen may show **More info → Run anyway** since binaries are unsigned. |
+| **Windows 10/11** | `IDE-Lyrics-Studio-Setup-1.8.4.exe` | `IDE-Lyrics-Studio.exe` | No admin or Python needed. On first launch, Windows SmartScreen may show **More info → Run anyway** since binaries are unsigned. |
 | **macOS (Apple Silicon)** | `IDE-Lyrics-Studio-macOS-arm64.dmg` | `IDE-Lyrics-Studio-macOS.zip` | Drag `IDE-Lyrics-Studio.app` to Applications. Run `xattr -cr /Applications/IDE-Lyrics-Studio.app` once to clear Gatekeeper quarantine. For system-wide sync beyond Spotify/Apple Music on macOS 15.4+, install `brew tap ungive/media-control && brew install media-control`. |
-| **Linux (Ubuntu / Debian / Mint / Pop!_OS)** | `ide-lyrics-studio_1.8.3_all.deb` | `IDE-Lyrics-Studio-Linux.tar.gz` | Install with `sudo apt install ./ide-lyrics-studio_1.8.3_all.deb` (pulls GTK3/WebKitGTK automatically, zero glibc lock-in). For Fedora/Arch, extract the `.tar.gz` and run `./install.sh` (requires `python3-gobject`, `webkit2gtk`, `pillow`, and `playerctl`). A Flatpak manifest is also included in `desktop-app/flatpak/`. |
+| **Linux (Ubuntu / Debian / Mint / Pop!_OS)** | `ide-lyrics-studio_1.8.4_all.deb` | `IDE-Lyrics-Studio-Linux.tar.gz` | Install with `sudo apt install ./ide-lyrics-studio_1.8.4_all.deb` (pulls GTK3/WebKitGTK automatically, zero glibc lock-in). For Fedora/Arch, extract the `.tar.gz` and run `./install.sh` (requires `python3-gobject`, `webkit2gtk`, `pillow`, and `playerctl`). Works cleanly on X11 & Wayland/NVIDIA (`WEBKIT_DISABLE_DMABUF_RENDERER=1` preconfigured). A Flatpak manifest is also included in `desktop-app/flatpak/`. |
 
 ## How It Works Under the Hood
 
 | Layer | Windows | macOS (Apple Silicon) | Linux |
 | --- | --- | --- | --- |
 | **Media Sync** | WinRT SMTC (`GlobalSystemMediaTransportControls`) | `media-control` (macOS 15.4+) → `nowplaying-cli` → AppleScript | MPRIS2 over D-Bus (`playerctl` / `gdbus`) |
-| **Live Wallpaper** | Win32 `WorkerW` behind `SHELLDLL_DefView` | Cocoa `NSWindow` at `kCGDesktopWindowLevel` | GTK3/GDK `DESKTOP` & `keep_below` hints |
+| **Live Wallpaper** | Win32 `WorkerW` behind `SHELLDLL_DefView` | Cocoa `NSWindow` at `CGWindowLevelForKey(kCGDesktopIconWindowLevelKey) - 1` | GTK3/GDK `DESKTOP` & `keep_below` hints |
 | **Web Engine** | Edge WebView2 (`pywebview`) | Native WKWebView (`cocoa`) | Native WebKitGTK (`gtk`) |
 | **Single Instance** | Win32 named mutex (`CreateMutexW`) | `fcntl.flock` lockfile | `fcntl.flock` lockfile |
 | **Login Autostart** | `HKCU\...\Run` registry entry (`--tray`) | `~/Library/LaunchAgents/*.plist` (`--tray`) | `~/.config/autostart/*.desktop` (`--tray`) |

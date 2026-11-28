@@ -6,4 +6,4 @@ Set shell = CreateObject("WScript.Shell")
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 appPy = fso.BuildPath(scriptDir, "app.py")
 shell.CurrentDirectory = scriptDir
-shell.Run "pythonw """ & appPy & """", 0, False
+shell.Run "pythonw """ & appPy & """ --tray", 0, False

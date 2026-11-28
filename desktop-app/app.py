@@ -35,6 +35,10 @@ _IS_WINDOWS = sys.platform == "win32"
 _IS_MACOS = sys.platform == "darwin"
 _IS_LINUX = sys.platform.startswith("linux")
 
+if _IS_LINUX:
+    os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+    os.environ.setdefault("GDK_BACKEND", "x11,wayland")
+
 IS_FROZEN = bool(getattr(sys, "frozen", False))
 
 
@@ -63,6 +67,7 @@ else:
 CONFIG_PATH = DATA_DIR / "config.json"
 LOG_PATH = DATA_DIR / "desktop-app.log"
 STORAGE_DIR = DATA_DIR / "webview_storage"
+RUNTIME_PORT_PATH = DATA_DIR / "runtime_port"
 MACOS_LAUNCHAGENT_LABEL = "com.idelyrics.studio"
 MACOS_LAUNCHAGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{MACOS_LAUNCHAGENT_LABEL}.plist"
 LINUX_AUTOSTART_DESKTOP = (
@@ -89,7 +94,7 @@ except Exception:
         return round(max(float(min_opacity), min(1.0, num)), 4)
 
 WINDOW_TITLE = "IDE Lyrics Studio"
-APP_VERSION = "1.8.3"
+APP_VERSION = "1.8.4"
 GITHUB_REPO = "Mehdito-2005/ide-lyrics-studio"
 VALID_MODES = ("app", "wallpaper", "overlay")
 VALID_OVERLAY_SIDES = ("left", "center", "right")
@@ -720,7 +725,10 @@ def check_for_updates(
     return thread
 
 
-def _make_handler(root_dir: Path) -> type[SimpleHTTPRequestHandler]:
+def _make_handler(
+    root_dir: Path,
+    on_show_request: Optional[Callable[[], None]] = None,
+) -> type[SimpleHTTPRequestHandler]:
     root_str = str(root_dir)
 
     class QuietLocalHandler(SimpleHTTPRequestHandler):
@@ -738,6 +746,21 @@ def _make_handler(root_dir: Path) -> type[SimpleHTTPRequestHandler]:
             with suppress(ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
                 super().handle_one_request()
 
+        def do_POST(self) -> None:
+            if self.path.split("?", 1)[0] == "/_studio/show" and callable(on_show_request):
+                threading.Thread(target=lambda: _safe_call(on_show_request), daemon=True).start()
+                body = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                with suppress(OSError):
+                    self.wfile.write(body)
+                return
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
     return QuietLocalHandler
 
 
@@ -748,13 +771,16 @@ class _DaemonThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = not _IS_WINDOWS
 
 
-def start_local_server(root_dir: Path = REPO_ROOT) -> tuple[ThreadingHTTPServer, int]:
+def start_local_server(
+    root_dir: Path = REPO_ROOT,
+    on_show_request: Optional[Callable[[], None]] = None,
+) -> tuple[ThreadingHTTPServer, int]:
     """Start a localhost HTTP server on a stable port (falling back to ephemeral).
 
     Keeping a stable port preserves WebView localStorage (themes, layout,
     custom backgrounds) across launches.
     """
-    handler_cls = _make_handler(root_dir)
+    handler_cls = _make_handler(root_dir, on_show_request=on_show_request)
     try:
         server = _DaemonThreadingHTTPServer(("127.0.0.1", PREFERRED_HTTP_PORT), handler_cls)
     except OSError:
@@ -762,6 +788,37 @@ def start_local_server(root_dir: Path = REPO_ROOT) -> tuple[ThreadingHTTPServer,
     port = int(server.server_address[1])
     threading.Thread(target=server.serve_forever, name="ide-lyrics-http", daemon=True).start()
     return server, port
+
+
+def notify_running_instance_show(
+    port_file: Path = RUNTIME_PORT_PATH,
+    default_port: int = PREFERRED_HTTP_PORT,
+    timeout: float = 0.8,
+) -> bool:
+    """Ask an already-running Studio instance to bring its window to the front."""
+    ports: list[int] = []
+    with suppress(Exception):
+        if Path(port_file).is_file():
+            raw = Path(port_file).read_text(encoding="utf-8").strip()
+            if raw.isdigit() and int(raw) > 0:
+                ports.append(int(raw))
+    if default_port not in ports:
+        ports.append(default_port)
+
+    for port in ports:
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/_studio/show",
+                data=b"{}",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=max(0.2, float(timeout))) as resp:
+                if int(getattr(resp, "status", 0)) == 200:
+                    return True
+        except Exception:
+            continue
+    return False
 
 
 def stop_local_server(server: Optional[ThreadingHTTPServer]) -> None:
@@ -1002,6 +1059,37 @@ def _get_screen_size() -> tuple[int, int]:
     return 1920, 1080
 
 
+def _has_linux_tray_host() -> bool:
+    """Return True if the current Linux session has an active tray/indicator host."""
+    if not _IS_LINUX:
+        return True
+    with suppress(Exception):
+        from gi.repository import Gio, GLib  # type: ignore
+
+        conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        res = conn.call_sync(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "NameHasOwner",
+            GLib.Variant("(s)", ("org.kde.StatusNotifierWatcher",)),
+            GLib.VariantType("(b)"),
+            Gio.DBusCallFlags.NONE,
+            400,
+            None,
+        )
+        if res and bool(res.unpack()[0]):
+            return True
+    with suppress(Exception):
+        import pystray  # type: ignore
+
+        mod_name = getattr(getattr(pystray, "Icon", None), "__module__", "")
+        session_type = os.environ.get("XDG_SESSION_TYPE", "").strip().lower()
+        if (mod_name.endswith("._gtk") or mod_name.endswith("._xorg")) and session_type != "wayland":
+            return True
+    return False
+
+
 class DesktopAppController:
     """Coordinates the WebView window, wallpaper host, media bridge, local server, and tray."""
 
@@ -1051,6 +1139,8 @@ class DesktopAppController:
         self.http_server: Optional[ThreadingHTTPServer] = None
         self.http_port: int = 0
         self.tray_icon: Any = None
+        self._tray_available: bool = False
+        self._on_signals_reinstall: Optional[Callable[[], None]] = None
         self.smtc_bridge: Any = None
         self.wallpaper_host: Any = None
         self._smtc_cls: Any = None
@@ -1113,15 +1203,23 @@ class DesktopAppController:
     def on_before_show(self) -> None:
         """Runs synchronously before initial handle creation to prevent a taskbar/Dock flash."""
         if _IS_MACOS:
-            self._set_taskbar_visible(False)
+            if not self.start_hidden:
+                self._set_taskbar_visible(self.mode == "app")
+            else:
+                self._set_taskbar_visible(False)
+            self.start_tray()
             return
         with suppress(Exception):
             native = getattr(self.window, "native", None) if self.window is not None else None
             if native is not None and hasattr(native, "ShowInTaskbar"):
                 if not getattr(native, "IsHandleCreated", False):
                     native.ShowInTaskbar = False
-            elif _IS_LINUX and native is not None:
-                self._set_taskbar_visible(False)
+            elif _IS_LINUX:
+                if native is not None and self.wallpaper_host is not None and hasattr(self.wallpaper_host, "prepare_linux_window"):
+                    _safe_call(self.wallpaper_host.prepare_linux_window, native)
+                if native is not None:
+                    self._set_taskbar_visible(not self.start_hidden and self.mode == "app")
+                self.start_tray()
 
     def _show_window(self) -> None:
         if self.window is None:
@@ -1132,7 +1230,11 @@ class DesktopAppController:
                 if hasattr(self.window, "hidden"):
                     self.window.hidden = False
         _safe_call(self.window.show)
-        self._set_taskbar_visible(False)
+        if _IS_LINUX and self.wallpaper_host is not None and hasattr(self.wallpaper_host, "present_linux_window"):
+            handle = self._get_host_handle()
+            if handle:
+                _safe_call(self.wallpaper_host.present_linux_window, handle)
+        self._set_taskbar_visible(bool(_IS_MACOS or _IS_LINUX) and self.mode == "app")
         self._window_visible = True
 
     def _detach_wallpaper_if_attached(self, handle: Any = None) -> None:
@@ -1182,7 +1284,8 @@ class DesktopAppController:
                 layer,
                 native_form=self._get_native_form(),
             )
-        elif layer == "top":
+            return
+        if layer == "top":
             self._set_on_top(handle, True)
         else:
             self._set_on_top(handle, False)
@@ -1243,6 +1346,15 @@ class DesktopAppController:
         if isinstance(snap, dict):
             self.push_media_update(snap)
 
+    def _can_hide_to_tray(self) -> bool:
+        return bool(self.tray_icon is not None and self._tray_available)
+
+    def show_existing_window(self) -> dict[str, Any]:
+        target_mode = "app" if (self.mode == "wallpaper" and self._attached_to_wallpaper) else (
+            self.mode if self.mode in ("app", "overlay") else "app"
+        )
+        return self.set_mode(target_mode, show_window=True)
+
     def hide_to_tray(self) -> dict[str, Any]:
         with self._mode_lock:
             self._capture_and_save_geometry()
@@ -1256,7 +1368,7 @@ class DesktopAppController:
 
     def on_window_closing(self) -> Optional[bool]:
         """Hide back to the tray on window close unless an explicit quit was requested."""
-        if self._allow_close or self._shutting_down:
+        if self._allow_close or self._shutting_down or not self._can_hide_to_tray():
             self.shutdown(destroy_window=False)
             return None
         threading.Thread(target=self.hide_to_tray, daemon=True).start()
@@ -1445,11 +1557,12 @@ class DesktopAppController:
                     self._detach_wallpaper_if_attached(handle)
                     attached = False
                     is_overlay = normalized == "overlay"
+                    self.mode = normalized
                     self._set_overlay_appearance(handle, is_overlay)
                     if not is_overlay:
                         self._apply_overlay_effects(handle, False)
                         self._set_window_z_layer(handle, "normal")
-                    self._set_taskbar_visible(False)
+                    self._set_taskbar_visible(bool(_IS_MACOS or _IS_LINUX) and not is_overlay)
                     self._apply_window_geometry(normalized)
                     if show_window:
                         self._show_window()
@@ -1856,10 +1969,24 @@ class DesktopAppController:
 
     def _run_on_tray_thread(self, fn: Callable[[], Any]) -> None:
         if _IS_MACOS:
+            if threading.current_thread() is threading.main_thread():
+                _safe_call(fn)
+                return
             try:
                 from PyObjCTools import AppHelper  # type: ignore
 
                 AppHelper.callAfter(fn)
+                return
+            except Exception:
+                pass
+        elif _IS_LINUX:
+            if threading.current_thread() is threading.main_thread():
+                _safe_call(fn)
+                return
+            try:
+                from gi.repository import GLib  # type: ignore
+
+                GLib.idle_add(lambda: (_safe_call(fn), False)[1])
                 return
             except Exception:
                 pass
@@ -2131,10 +2258,13 @@ class DesktopAppController:
         )
 
     def start_tray(self) -> None:
+        if self.tray_icon is not None:
+            return
         try:
             import pystray
             menu = self.build_tray_menu()
-        except Exception:
+        except Exception as exc:
+            _get_logger().warning("Tray initialization skipped: %s", exc)
             return
 
         image = _safe_call(create_tray_icon_image, 64)
@@ -2143,12 +2273,38 @@ class DesktopAppController:
 
         try:
             self.tray_icon = pystray.Icon("ide_lyrics_studio", image, WINDOW_TITLE, menu)
-            if hasattr(self.tray_icon, "run_detached"):
-                self.tray_icon.run_detached()
+            if _IS_MACOS or _IS_LINUX:
+                def _tray_setup(icon: Any) -> None:
+                    self._run_on_tray_thread(lambda: _safe_call(setattr, icon, "visible", True))
+
+                if hasattr(self.tray_icon, "run_detached"):
+                    try:
+                        self.tray_icon.run_detached(setup=_tray_setup)
+                    except NotImplementedError:
+                        threading.Thread(
+                            target=lambda: self.tray_icon.run(setup=_tray_setup),
+                            name="ide-lyrics-tray",
+                            daemon=True,
+                        ).start()
+                else:
+                    threading.Thread(
+                        target=lambda: self.tray_icon.run(setup=_tray_setup),
+                        name="ide-lyrics-tray",
+                        daemon=True,
+                    ).start()
+                self._tray_available = True if _IS_MACOS else _has_linux_tray_host()
+                if callable(self._on_signals_reinstall):
+                    _safe_call(self._on_signals_reinstall)
             else:
-                threading.Thread(target=self.tray_icon.run, name="ide-lyrics-tray", daemon=True).start()
-        except Exception:
+                if hasattr(self.tray_icon, "run_detached"):
+                    self.tray_icon.run_detached()
+                else:
+                    threading.Thread(target=self.tray_icon.run, name="ide-lyrics-tray", daemon=True).start()
+                self._tray_available = True
+        except Exception as exc:
+            _get_logger().warning("Failed to start system tray: %s", exc)
             self.tray_icon = None
+            self._tray_available = False
 
     def _refresh_tray_menu(self) -> None:
         if self.tray_icon is not None:
@@ -2232,11 +2388,26 @@ class DesktopAppController:
 
         stop_local_server(self.http_server)
         self.http_server = None
+        with suppress(OSError):
+            if RUNTIME_PORT_PATH.is_file():
+                RUNTIME_PORT_PATH.unlink()
 
         if self.tray_icon is not None:
             icon_ref = self.tray_icon
             self.tray_icon = None
-            self._run_on_tray_thread(icon_ref.stop)
+            self._tray_available = False
+            if _IS_MACOS:
+                def _cleanup_mac_tray() -> None:
+                    with suppress(Exception):
+                        status_bar = getattr(icon_ref, "_status_bar", None)
+                        status_item = getattr(icon_ref, "_status_item", None)
+                        if status_bar is not None and status_item is not None:
+                            status_bar.removeStatusItem_(status_item)
+                    _safe_call(icon_ref.stop)
+
+                self._run_on_tray_thread(_cleanup_mac_tray)
+            else:
+                self._run_on_tray_thread(icon_ref.stop)
 
         if destroy_window and self.window is not None:
             _safe_call(self.window.destroy)
@@ -2387,8 +2558,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[list[str]] = None) -> int:
     setup_logging(LOG_PATH)
 
+    args = parse_args(argv)
+
     instance_lock = SingleInstanceLock()
     if not instance_lock.acquire():
+        if not args.tray:
+            notify_running_instance_show(RUNTIME_PORT_PATH)
         return 0
     atexit.register(instance_lock.release)
 
@@ -2396,8 +2571,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         from wallpaper_host import enable_dpi_awareness
 
         enable_dpi_awareness()
-
-    args = parse_args(argv)
 
     mode = get_saved_mode(CONFIG_PATH)
     if args.mode:
@@ -2421,14 +2594,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     controller = DesktopAppController(
         initial_mode=mode,
         config_path=CONFIG_PATH,
-        start_hidden=not (args.show or args.choose or first_run_wizard),
+        start_hidden=bool(args.tray and not args.show and not args.choose and not first_run_wizard),
         open_wizard=first_run_wizard,
     )
     api = DesktopApi(controller)
 
-    server, port = start_local_server(REPO_ROOT)
+    server, port = start_local_server(REPO_ROOT, on_show_request=controller.show_existing_window)
     controller.http_server = server
     controller.http_port = port
+    with suppress(OSError):
+        RUNTIME_PORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RUNTIME_PORT_PATH.write_text(str(port), encoding="utf-8")
     url = f"http://127.0.0.1:{port}/live-wallpaper.html?desktopApp=1"
     controller._url = url
 
@@ -2478,11 +2654,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     window.events.closing += controller.on_window_closing
     window.events.closed += lambda: controller.shutdown(destroy_window=False)
 
+    controller._on_signals_reinstall = _register_signals
     controller.start_smtc()
     controller.start_yield_watcher()
-    controller.start_tray()
-    # pystray GTK backend resets SIGINT to SIG_DFL on startup; re-install our handler.
-    _register_signals()
+    if _IS_WINDOWS:
+        controller.start_tray()
+        _register_signals()
 
     with suppress(Exception):
         STORAGE_DIR.mkdir(parents=True, exist_ok=True)

@@ -384,39 +384,39 @@ def test_version_and_updates():
     import threading
     import app
 
-    assert app.APP_VERSION == "1.8.3", f"Expected APP_VERSION='1.8.3', got {app.APP_VERSION!r}"
+    assert app.APP_VERSION == "1.8.4", f"Expected APP_VERSION='1.8.4', got {app.APP_VERSION!r}"
     assert app.GITHUB_REPO == "Mehdito-2005/ide-lyrics-studio", f"Unexpected GITHUB_REPO: {app.GITHUB_REPO!r}"
 
-    # Verify installer & PyInstaller version metadata are bumped to 1.8.3 / 1.8.3.0
+    # Verify installer & PyInstaller version metadata are bumped to 1.8.4 / 1.8.4.0
     ver_txt = (app_dir / "version_info.txt").read_text(encoding="utf-8")
-    assert 'StringStruct("FileVersion", "1.8.3.0")' in ver_txt
-    assert 'StringStruct("ProductVersion", "1.8.3.0")' in ver_txt
-    assert "filevers=(1, 8, 3, 0)" in ver_txt
+    assert 'StringStruct("FileVersion", "1.8.4.0")' in ver_txt
+    assert 'StringStruct("ProductVersion", "1.8.4.0")' in ver_txt
+    assert "filevers=(1, 8, 4, 0)" in ver_txt
     iss_txt = (app_dir / "installer.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "1.8.3"' in iss_txt
+    assert '#define MyAppVersion "1.8.4"' in iss_txt
 
     # Pure version comparison checks
-    assert app.is_newer_version("1.9.0", "1.8.3") is True
-    assert app.is_newer_version("v1.9.0", "1.8.3") is True
+    assert app.is_newer_version("1.9.0", "1.8.4") is True
+    assert app.is_newer_version("v1.9.0", "1.8.4") is True
     assert app.is_newer_version("v2.0", "1.9.9") is True
-    assert app.is_newer_version("1.10.0", "1.8.3") is True
-    assert app.is_newer_version("1.8.4", "1.8.3") is True
+    assert app.is_newer_version("1.10.0", "1.8.4") is True
+    assert app.is_newer_version("1.8.5", "1.8.4") is True
     assert app.is_newer_version("1.9.0", "1.9.0-beta.1") is True
     assert app.is_newer_version("1.9.0-beta.2", "1.9.0-beta.1") is True
-    assert app.is_newer_version("1.8.3", "1.8.3") is False
-    assert app.is_newer_version("v1.8.3", "1.8.3") is False
-    assert app.is_newer_version("1.8.2", "1.8.3") is False
+    assert app.is_newer_version("1.8.4", "1.8.4") is False
+    assert app.is_newer_version("v1.8.4", "1.8.4") is False
+    assert app.is_newer_version("1.8.3", "1.8.4") is False
     assert app.is_newer_version("1.9.0-beta.1", "1.9.0") is False
-    assert app.is_newer_version("", "1.8.3") is False
+    assert app.is_newer_version("", "1.8.4") is False
     assert app.is_newer_version("1.9.0", "") is False
-    assert app.is_newer_version("not-a-version", "1.8.3") is False
-    assert app.is_newer_version("1..2", "1.8.3") is False
+    assert app.is_newer_version("not-a-version", "1.8.4") is False
+    assert app.is_newer_version("1..2", "1.8.4") is False
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cfg_path = Path(tmpdir) / "config.json"
         ctrl = app.DesktopAppController(initial_mode="app", config_path=cfg_path)
         api = app.DesktopApi(ctrl)
-        assert api.get_version() == "1.8.3"
+        assert api.get_version() == "1.8.4"
 
         # Offline mocked check_for_updates() verifies non-blocking thread & tray label update
         orig_query = app._query_latest_release
@@ -452,7 +452,7 @@ def test_version_and_updates():
         finally:
             app._query_latest_release = orig_query
 
-check("APP_VERSION 1.8.3, is_newer_version(), DesktopApi.get_version() & update checker", test_version_and_updates)
+check("APP_VERSION 1.8.4, is_newer_version(), DesktopApi.get_version() & update checker", test_version_and_updates)
 
 # 4m. pystray menu & submenu validation (callback arity, bool(menu), Check for Updates, Setup Wizard, Mini Overlay Side)
 def test_pystray_menu_validation():
@@ -511,7 +511,7 @@ def test_setup_wizard_and_integrations():
         api = app.DesktopApi(ctrl)
         assert api.is_wizard_needed() is True
         state = api.get_setup_state()
-        assert state["version"] == "1.8.3" and "integrations" in state
+        assert state["version"] == "1.8.4" and "integrations" in state
         api.mark_wizard_completed()
         assert app.is_wizard_completed(cfg_path) is True
         assert api.is_wizard_needed() is False
@@ -1030,6 +1030,83 @@ def test_v180_bugfixes_and_features():
     assert p.direct_children == 12, f"#wallpaper-container must keep 12 direct children, got {p.direct_children}"
 
 check("v1.8.0 Bug fixes, Album Backdrop, Spectrum/Halo Visualizers, Ghost Mode & Auto-Yield", test_v180_bugfixes_and_features)
+
+# 4u. v1.8.4 macOS & Linux fixes, single-instance wake-up & packaging invariants
+def test_v184_macos_linux_fixes():
+    import html.parser
+    import threading
+    import app
+    import smtc_bridge
+    import wallpaper_host
+    from wallpaper_host import WallpaperHost
+
+    assert smtc_bridge._safe_float("42,5") == 42.5
+    osa = smtc_bridge._parse_applescript_output("Spotify\tplaying\tSong\tArtist\tAlb\t42,5\t210000\t")
+    assert osa["status"] == "playing" and abs(osa["positionSec"] - 42.5) < 0.01 and abs(osa["durationSec"] - 210.0) < 0.01
+    assert 'if application "Spotify" is running then' in smtc_bridge._MACOS_POLL_APPLESCRIPT
+    assert 'if application "Music" is running then' in smtc_bridge._MACOS_POLL_APPLESCRIPT
+    assert smtc_bridge._MACOS_POLL_APPLESCRIPT.count("try") >= 3
+
+    assert wallpaper_host._get_macos_wallpaper_level() > wallpaper_host._MACOS_DESKTOP_WINDOW_LEVEL
+    assert WallpaperHost.prepare_linux_window(0) is False
+    assert WallpaperHost.present_linux_window(0) is False
+
+    called = threading.Event()
+    server, port = app.start_local_server(repo_root, on_show_request=lambda: called.set())
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            port_file = Path(tmpdir) / "runtime_port"
+            port_file.write_text(str(port), encoding="utf-8")
+            assert app.notify_running_instance_show(port_file=port_file, default_port=port) is True
+            assert called.wait(timeout=2.0), "POST /_studio/show did not invoke callback"
+    finally:
+        app.stop_local_server(server)
+
+    build_mac = (app_dir / "build-mac.sh").read_text(encoding="utf-8")
+    for token in ("NSAppleEventsUsageDescription", "NSAllowsLocalNetworking", '--hidden-import "Quartz"'):
+        assert token in build_mac, f"Missing macOS build token: {token}"
+
+    build_linux = (app_dir / "build-linux.sh").read_text(encoding="utf-8")
+    for token in ("WEBKIT_DISABLE_DMABUF_RENDERER", "GDK_BACKEND"):
+        assert token in build_linux, f"Missing Linux build token: {token}"
+
+    flatpak_yml = (app_dir / "flatpak" / "com.idelyrics.studio.yml").read_text(encoding="utf-8")
+    assert "project.json" not in flatpak_yml and "LivelyProperties.json" not in flatpak_yml
+
+    html_text = (repo_root / "live-wallpaper.html").read_text(encoding="utf-8")
+    assert "var(--accent" not in html_text
+    assert "rgb(1, 2, 3)" not in html_text
+
+    VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    class _WpChildCounter184(html.parser.HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.depth = None
+            self.direct_children = 0
+        def handle_starttag(self, tag, attrs):
+            attr_map = dict(attrs)
+            if self.depth is not None:
+                if self.depth == 1:
+                    self.direct_children += 1
+                if tag.lower() not in VOID_TAGS:
+                    self.depth += 1
+            elif attr_map.get("id") == "wallpaper-container":
+                self.depth = 1
+        def handle_startendtag(self, tag, attrs):
+            if self.depth is not None and self.depth == 1:
+                self.direct_children += 1
+        def handle_endtag(self, tag):
+            if self.depth is not None and tag.lower() not in VOID_TAGS:
+                self.depth -= 1
+                if self.depth == 0:
+                    self.depth = None
+
+    p = _WpChildCounter184()
+    p.feed(html_text)
+    assert p.direct_children == 12, f"#wallpaper-container must keep 12 direct children, got {p.direct_children}"
+
+check("v1.8.4 macOS & Linux fixes, single-instance wake-up & packaging invariants", test_v184_macos_linux_fixes)
 
 all_ok = True
 for ok, name, err in results:

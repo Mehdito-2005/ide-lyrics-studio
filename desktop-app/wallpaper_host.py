@@ -354,6 +354,92 @@ def _query_xrandr_monitors() -> list[dict]:
     return []
 
 
+def _query_gdk_monitors() -> list[dict]:
+    """Enumerate monitors via Gdk.Display when xrandr is unavailable (e.g. Wayland)."""
+    monitors: list[dict] = []
+    if not _IS_LINUX:
+        return monitors
+    with suppress(Exception):
+        from gi.repository import Gdk  # type: ignore
+
+        display = Gdk.Display.get_default()
+        if display is None:
+            return monitors
+        n = int(display.get_n_monitors())
+        for idx in range(n):
+            mon = display.get_monitor(idx)
+            if mon is None:
+                continue
+            geom = mon.get_geometry()
+            w, h = int(geom.width), int(geom.height)
+            if w <= 0 or h <= 0:
+                continue
+            x, y = int(geom.x), int(geom.y)
+            is_primary = bool(mon.is_primary()) if hasattr(mon, "is_primary") else (idx == 0)
+            model = str(mon.get_model() or "") if hasattr(mon, "get_model") else ""
+            name = model.strip() or f"DISPLAY{idx + 1}"
+            monitors.append(
+                {
+                    "id": str(idx),
+                    "name": name,
+                    "label": f"Monitor {idx + 1} ({w}x{h})",
+                    "rect": (x, y, w, h),
+                    "workerw_rect": (x, y, w, h),
+                    "is_primary": is_primary,
+                }
+            )
+    if monitors and not any(m["is_primary"] for m in monitors):
+        monitors[0]["is_primary"] = True
+    return monitors
+
+
+def _query_linux_monitors() -> list[dict]:
+    return _query_xrandr_monitors() or _query_gdk_monitors()
+
+
+def _get_macos_wallpaper_level() -> int:
+    """Return a Cocoa window level strictly above the system desktop picture and below desktop icons."""
+    if _IS_MACOS:
+        with suppress(Exception):
+            import Quartz  # type: ignore
+
+            return int(Quartz.CGWindowLevelForKey(Quartz.kCGDesktopIconWindowLevelKey)) - 1
+    return _MACOS_DESKTOP_WINDOW_LEVEL + 1
+
+
+def _set_macos_webview_transparent(nswin: Any, transparent: bool) -> None:
+    cv = None
+    with suppress(Exception):
+        cv = nswin.contentView()
+    if cv is None:
+        return
+    with suppress(Exception):
+        cv.setValue_forKey_(not bool(transparent), "drawsBackground")
+    with suppress(Exception):
+        cv.setValue_forKey_(bool(transparent), "drawsTransparentBackground")
+
+
+def _find_gtk_webview(widget: Any) -> Any:
+    """Walk a GTK3 container recursively to locate the hosted WebKit2.WebView widget."""
+    if widget is None:
+        return None
+    if hasattr(widget, "set_background_color") and hasattr(widget, "get_settings"):
+        return widget
+    children: list[Any] = []
+    with suppress(Exception):
+        if hasattr(widget, "get_children"):
+            children = list(widget.get_children() or [])
+        elif hasattr(widget, "get_child"):
+            child = widget.get_child()
+            if child is not None:
+                children = [child]
+    for child in children:
+        found = _find_gtk_webview(child)
+        if found is not None:
+            return found
+    return None
+
+
 def _dispatch_to_main_thread(schedule_fn: Callable[[Callable[[], Any]], Any], fn: Callable[[], Any]) -> Any:
     if threading.current_thread() is threading.main_thread():
         return fn()
@@ -436,6 +522,45 @@ class WallpaperHost:
 
     def __init__(self) -> None:
         self._saved_states: dict[int, dict] = {}
+        self._linux_overlay_css: dict[int, Any] = {}
+
+    @classmethod
+    def prepare_linux_window(cls, handle: Any) -> bool:
+        """Assign an RGBA visual before realization so GTK3 Mini Overlay supports alpha transparency."""
+        if not _IS_LINUX:
+            return False
+        gtk_win = _unwrap_native_window(handle, "get_screen", "set_visual")
+        if gtk_win is None:
+            return False
+
+        def _do() -> bool:
+            if not gtk_win.get_realized():
+                screen = gtk_win.get_screen()
+                visual = screen.get_rgba_visual() if screen is not None else None
+                if visual is not None:
+                    gtk_win.set_visual(visual)
+                gtk_win.set_app_paintable(True)
+            return True
+
+        return _run_ui_bool(_run_on_gtk_main_thread, _do)
+
+    @classmethod
+    def present_linux_window(cls, handle: Any) -> bool:
+        """Un-iconify, show, and raise a GTK3 window."""
+        if not _IS_LINUX:
+            return False
+        gtk_win = _unwrap_native_window(handle, "present", "show_all")
+        if gtk_win is None:
+            return False
+
+        def _do() -> bool:
+            with suppress(Exception):
+                gtk_win.deiconify()
+            gtk_win.show_all()
+            gtk_win.present()
+            return True
+
+        return _run_ui_bool(_run_on_gtk_main_thread, _do)
 
     @staticmethod
     def _is_valid_hwnd(hwnd: object) -> bool:
@@ -465,7 +590,7 @@ class WallpaperHost:
                     return (0, 0, max(1, int(frame.size.width)), max(1, int(frame.size.height)))
 
         if _IS_LINUX:
-            mons = _query_xrandr_monitors()
+            mons = _query_linux_monitors()
             if mons:
                 primary = next((m for m in mons if m.get("is_primary")), mons[0])
                 _, _, w, h = primary["rect"]
@@ -498,7 +623,7 @@ class WallpaperHost:
                     return (min_x, min_y, max(1, max_x - min_x), max(1, max_y - min_y))
 
         if _IS_LINUX:
-            mons = _query_xrandr_monitors()
+            mons = _query_linux_monitors()
             if mons:
                 min_x = min(m["rect"][0] for m in mons)
                 min_y = min(m["rect"][1] for m in mons)
@@ -568,7 +693,7 @@ class WallpaperHost:
             except Exception:
                 monitors = []
         elif _IS_LINUX:
-            monitors = _query_xrandr_monitors()
+            monitors = _query_linux_monitors()
 
         if not monitors:
             _, _, pw, ph = cls.get_primary_screen_rect()
@@ -910,15 +1035,27 @@ class WallpaperHost:
                     nswin.setOpaque_(False)
                     nswin.setBackgroundColor_(AppKit.NSColor.clearColor())
                     nswin.setHasShadow_(False)
+                    with suppress(Exception):
+                        nswin.setMovableByWindowBackground_(True)
+                    _set_macos_webview_transparent(nswin, True)
                 else:
-                    nswin.setStyleMask_(
-                        AppKit.NSWindowStyleMaskTitled
-                        | AppKit.NSWindowStyleMaskClosable
-                        | AppKit.NSWindowStyleMaskMiniaturizable
-                        | AppKit.NSWindowStyleMaskResizable
-                    )
+                    if not self.is_attached(nswin):
+                        nswin.setStyleMask_(
+                            AppKit.NSWindowStyleMaskTitled
+                            | AppKit.NSWindowStyleMaskClosable
+                            | AppKit.NSWindowStyleMaskMiniaturizable
+                            | AppKit.NSWindowStyleMaskResizable
+                        )
+                        nswin.setHasShadow_(True)
                     nswin.setOpaque_(True)
-                    nswin.setHasShadow_(True)
+                    nswin.setBackgroundColor_(
+                        AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
+                            11.0 / 255.0, 13.0 / 255.0, 20.0 / 255.0, 1.0
+                        )
+                    )
+                    with suppress(Exception):
+                        nswin.setMovableByWindowBackground_(False)
+                    _set_macos_webview_transparent(nswin, False)
                 return True
 
             return _run_ui_bool(_run_on_macos_main_thread, _do_mac)
@@ -929,7 +1066,58 @@ class WallpaperHost:
                 return False
 
             def _do_gtk() -> bool:
-                gtk_win.set_decorated(not bool(enabled))
+                from gi.repository import Gdk, Gtk  # type: ignore
+
+                key = self._state_key(gtk_win)
+                wv = _find_gtk_webview(gtk_win)
+                scrolled = None
+                with suppress(Exception):
+                    scrolled = gtk_win.get_child()
+
+                if enabled:
+                    gtk_win.set_decorated(False)
+                    with suppress(Exception):
+                        if not gtk_win.get_realized():
+                            screen = gtk_win.get_screen()
+                            visual = screen.get_rgba_visual() if screen is not None else None
+                            if visual is not None:
+                                gtk_win.set_visual(visual)
+                        gtk_win.set_app_paintable(True)
+
+                    provider = self._linux_overlay_css.get(key)
+                    if provider is None:
+                        provider = Gtk.CssProvider()
+                        provider.load_from_data(
+                            b"window, scrolledwindow, viewport, * { background-color: rgba(0, 0, 0, 0); background-image: none; }"
+                        )
+                        self._linux_overlay_css[key] = provider
+                    with suppress(Exception):
+                        gtk_win.get_style_context().add_provider(
+                            provider, Gtk.STYLE_PROVIDER_PRIORITY_USER
+                        )
+                    if scrolled is not None:
+                        with suppress(Exception):
+                            scrolled.get_style_context().add_provider(
+                                provider, Gtk.STYLE_PROVIDER_PRIORITY_USER
+                            )
+                    if wv is not None:
+                        with suppress(Exception):
+                            wv.set_background_color(Gdk.RGBA(0.0, 0.0, 0.0, 0.0))
+                else:
+                    provider = self._linux_overlay_css.pop(key, None)
+                    if provider is not None:
+                        with suppress(Exception):
+                            gtk_win.get_style_context().remove_provider(provider)
+                        if scrolled is not None:
+                            with suppress(Exception):
+                                scrolled.get_style_context().remove_provider(provider)
+                    if wv is not None:
+                        with suppress(Exception):
+                            wv.set_background_color(
+                                Gdk.RGBA(11.0 / 255.0, 13.0 / 255.0, 20.0 / 255.0, 1.0)
+                            )
+                    if not self.is_attached(gtk_win):
+                        gtk_win.set_decorated(True)
                 return True
 
             return _run_ui_bool(_run_on_gtk_main_thread, _do_gtk)
@@ -991,12 +1179,21 @@ class WallpaperHost:
                 return False
 
             def _do_mac() -> bool:
+                import AppKit  # type: ignore
+
                 if norm == "top":
                     nswin.setLevel_(_MACOS_FLOATING_WINDOW_LEVEL)
+                    with suppress(Exception):
+                        nswin.setCollectionBehavior_(
+                            AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+                            | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+                        )
                 elif norm == "bottom":
-                    nswin.setLevel_(_MACOS_DESKTOP_WINDOW_LEVEL + 1)
+                    nswin.setLevel_(_get_macos_wallpaper_level() + 1)
                 else:
                     nswin.setLevel_(_MACOS_NORMAL_WINDOW_LEVEL)
+                    with suppress(Exception):
+                        nswin.setCollectionBehavior_(0)
                 return True
 
             return _run_ui_bool(_run_on_macos_main_thread, _do_mac)
@@ -1038,6 +1235,44 @@ class WallpaperHost:
     @classmethod
     def start_window_drag(cls, hwnd: Any, *, native_form: Any = None) -> bool:
         """Initiate a native OS borderless window drag from a WebView header."""
+        if _IS_MACOS:
+            nswin = _unwrap_native_window(hwnd, "performWindowDragWithEvent_")
+            if nswin is None:
+                return False
+
+            def _do_mac() -> bool:
+                import AppKit  # type: ignore
+
+                event = AppKit.NSApp.currentEvent()
+                if event is None:
+                    return False
+                nswin.performWindowDragWithEvent_(event)
+                return True
+
+            return _run_ui_bool(_run_on_macos_main_thread, _do_mac)
+
+        if _IS_LINUX:
+            gtk_win = _unwrap_native_window(hwnd, "begin_move_drag")
+            if gtk_win is None:
+                return False
+
+            def _do_gtk() -> bool:
+                from gi.repository import Gtk  # type: ignore
+
+                display = gtk_win.get_display()
+                if display is None:
+                    return False
+                seat = display.get_default_seat()
+                pointer = seat.get_pointer() if seat is not None else None
+                if pointer is None:
+                    return False
+                _, rx, ry = pointer.get_position()
+                ts = int(Gtk.get_current_event_time() or 0)
+                gtk_win.begin_move_drag(1, int(rx), int(ry), ts)
+                return True
+
+            return _run_ui_bool(_run_on_gtk_main_thread, _do_gtk)
+
         if not cls._is_valid_hwnd(hwnd) or _user32 is None:
             return False
 
@@ -1338,7 +1573,14 @@ class WallpaperHost:
                 target_frame = scr.frame() if scr is not None else AppKit.NSMakeRect(0, 0, 1920, 1080)
 
             nswin.setStyleMask_(AppKit.NSWindowStyleMaskBorderless)
-            nswin.setLevel_(_MACOS_DESKTOP_WINDOW_LEVEL)
+            nswin.setOpaque_(True)
+            nswin.setHasShadow_(False)
+            with suppress(Exception):
+                nswin.setCanHide_(False)
+            with suppress(Exception):
+                nswin.setMovableByWindowBackground_(False)
+            _set_macos_webview_transparent(nswin, False)
+            nswin.setLevel_(_get_macos_wallpaper_level())
             nswin.setCollectionBehavior_(
                 AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
                 | AppKit.NSWindowCollectionBehaviorStationary
@@ -1346,7 +1588,7 @@ class WallpaperHost:
             )
             nswin.setIgnoresMouseEvents_(True)
             nswin.setFrame_display_(target_frame, True)
-            nswin.orderBack_(None)
+            nswin.orderFrontRegardless()
             self._saved_states[key]["attached"] = True
             return True
 
@@ -1362,6 +1604,8 @@ class WallpaperHost:
 
             saved = self._saved_states.pop(self._state_key(nswin), None)
             nswin.setIgnoresMouseEvents_(False)
+            with suppress(Exception):
+                nswin.setCanHide_(True)
             if saved is not None:
                 nswin.setStyleMask_(saved["style_mask"])
                 nswin.setLevel_(saved["level"])
@@ -1427,6 +1671,9 @@ class WallpaperHost:
             else:
                 x, y, w, h = self.get_primary_screen_rect()
 
+            # X11/Wayland WMs ignore DESKTOP type hints while already mapped; unmap first.
+            if gtk_win.get_visible():
+                gtk_win.hide()
             with suppress(Exception):
                 gtk_win.set_type_hint(Gdk.WindowTypeHint.DESKTOP)
             with suppress(Exception):
@@ -1442,6 +1689,9 @@ class WallpaperHost:
                 gtk_win.move(x, y)
                 gtk_win.resize(max(1, w), max(1, h))
             gtk_win.show_all()
+            with suppress(Exception):
+                gtk_win.move(x, y)
+                gtk_win.resize(max(1, w), max(1, h))
             self._saved_states[key]["attached"] = True
             return True
 
@@ -1456,6 +1706,8 @@ class WallpaperHost:
             from gi.repository import Gdk  # type: ignore
 
             saved = self._saved_states.pop(self._state_key(gtk_win), None)
+            if gtk_win.get_visible():
+                gtk_win.hide()
             with suppress(Exception):
                 gtk_win.set_type_hint(Gdk.WindowTypeHint.NORMAL)
             with suppress(Exception):
@@ -1464,6 +1716,9 @@ class WallpaperHost:
             with suppress(Exception):
                 gtk_win.unstick()
             gtk_win.set_decorated(True)
+            gtk_win.set_skip_taskbar_hint(False)
+            gtk_win.set_skip_pager_hint(False)
+            gtk_win.show_all()
             if saved and "rect" in saved:
                 x, y, w, h = saved["rect"]
                 with suppress(Exception):

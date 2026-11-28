@@ -3,7 +3,7 @@
 ;   iscc desktop-app\installer.iss
 
 #define MyAppName "IDE Lyrics Studio"
-#define MyAppVersion "1.8.3"
+#define MyAppVersion "1.8.4"
 #define MyAppPublisher "IDE Lyrics Studio"
 #define MyAppExeName "IDE-Lyrics-Studio.exe"
 
